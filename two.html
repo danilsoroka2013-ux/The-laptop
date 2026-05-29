@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Комната 863 — Часть 2 (Исправленное управление)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+        body, html { width: 100%; height: 100%; overflow: hidden; background-color: #020202; font-family: sans-serif; }
+        #gameContainer { position: relative; width: 100vw; height: 100vh; }
+        canvas { display: block; width: 100%; height: 100%; }
+
+        #crosshair {
+            position: absolute; top: 50%; left: 50%; width: 16px; height: 16px;
+            transform: translate(-50%, -50%); pointer-events: none; z-index: 2;
+        }
+        #crosshair::before, #crosshair::after { content: ''; position: absolute; background: rgba(255, 255, 255, 0.8); }
+        #crosshair::before { top: 7px; left: -4px; width: 24px; height: 2px; }
+        #crosshair::after { top: -4px; left: 7px; width: 2px; height: 24px; }
+
+        #interactionPrompt {
+            position: absolute; bottom: 15%; left: 50%; transform: translateX(-50%);
+            color: #fff; background: rgba(0, 0, 0, 0.85); padding: 12px 24px;
+            border-radius: 4px; border: 1px solid #ff3333; font-size: 18px;
+            display: none; pointer-events: none; text-align: center; z-index: 3;
+        }
+        #clickToStart {
+            position: absolute; width: 100%; height: 100%; background: rgba(10,5,5,0.99);
+            color: #ff3333; display: flex; flex-direction: column; justify-content: center;
+            align-items: center; font-size: 20px; cursor: pointer; text-align: center; z-index: 20;
+        }
+        #subtitles {
+            position: absolute; top: 5%; left: 50%; transform: translateX(-50%);
+            color: #fff; background: rgba(0, 0, 0, 0.8); padding: 12px 24px;
+            border-radius: 4px; font-size: 16px; text-align: center; max-width: 80%;
+            pointer-events: none; transition: opacity 0.3s; opacity: 0; z-index: 5;
+        }
+
+        #screamer {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+            background-color: #000; background-image: url('image/face.png');
+            background-size: contain; background-position: center; background-repeat: no-repeat;
+            z-index: 30; display: none;
+        }
+    </style>
+</head>
+<body>
+
+<div id="gameContainer">
+    <div id="clickToStart">
+        <h2>УРОВЕНЬ 2 — ПОДВАЛ</h2>
+        <p style="margin-top: 15px; font-size: 16px; color: #aaa;">Впереди закрытая шахта лифта.</p>
+        <p style="margin-top: 30px; font-size: 14px; color: #666;">Кликни, чтобы начать</p>
+    </div>
+
+    <div id="crosshair"></div>
+    <div id="interactionPrompt">Нажмите [ E ]</div>
+    <div id="screamer"></div>
+    <div id="subtitles"></div>
+</div>
+
+<script>
+    const startScreen = document.getElementById('clickToStart');
+    const promptEl = document.getElementById('interactionPrompt');
+    const subtitles = document.getElementById('subtitles');
+    const screamerEl = document.getElementById('screamer');
+
+    const game = {
+        state: 'start',
+        leverActivated: false,
+        elevatorMoving: false,
+        gateOpening: false,
+        gateClosing: false,
+        gateY: 1.5,
+        elevatorY: 0,
+        lookingAt: null,
+        monsterSpeed: 0.035,
+        audioInitialized: false
+    };
+
+    // 1. Создание стандартных HTML5 аудио-объектов (не ломают скрипт, даже если файлов нет)
+    const sounds = {
+        fon: new Audio('music/fon.mp3'),
+        scream: new Audio('music/scream.mp3'),
+        knock: new Audio('music/knock.mp3'),
+        doorOpen: new Audio('music/door_open.mp3'),
+        doorClose: new Audio('music/door_close.mp3')
+    };
+
+    // Настройки звуков
+    sounds.fon.loop = true;
+    sounds.fon.volume = 0.4;
+    sounds.scream.volume = 0.9;
+    sounds.knock.volume = 0.6;
+    sounds.doorOpen.volume = 0.6;
+    sounds.doorClose.volume = 0.6;
+
+    function playSound(name) {
+        if (sounds[name]) {
+            sounds[name].currentTime = 0;
+            sounds[name].play().catch(e => console.log("Ошибка воспроизведения звука:", e));
+        }
+    }
+
+    // 2. Сцена и Камера
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x050404, 0.06);
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const cameraPivot = new THREE.Object3D();
+    cameraPivot.add(camera);
+    cameraPivot.position.set(0, 1.6, 5.0);
+    scene.add(cameraPivot);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.getElementById('gameContainer').appendChild(renderer.domElement);
+
+    // 3. Освещение
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.04);
+    scene.add(ambientLight);
+
+    const redLight = new THREE.PointLight(0xff3311, 1.2, 18);
+    redLight.position.set(0, 2.7, 0);
+    scene.add(redLight);
+
+    const leverZoneLight = new THREE.PointLight(0x6688aa, 0.6, 10);
+    leverZoneLight.position.set(9, 2.5, -8);
+    scene.add(leverZoneLight);
+
+    const playerLight = new THREE.SpotLight(0xffeedd, 4.0, 15, Math.PI / 4, 0.4, 1);
+    cameraPivot.add(playerLight);
+    playerLight.position.set(0, 0, 0);
+    const lightTarget = new THREE.Object3D();
+    lightTarget.position.set(0, 0, -1);
+    camera.add(lightTarget);
+    playerLight.target = lightTarget;
+
+    // 4. Материалы
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0x282828, roughness: 0.8 });
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.9 });
+    const metalMat = new THREE.MeshStandardMaterial({ color: 0x444444, metalness: 0.7, roughness: 0.4 });
+    const darkMetalMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.8, roughness: 0.7 });
+    const redButtonMat = new THREE.MeshStandardMaterial({ color: 0xff0000, roughness: 0.1, emissive: 0xff0000, emissiveIntensity: 0.8 });
+    const woodMat = new THREE.MeshStandardMaterial({ color: 0x4a3321, roughness: 0.7, metalness: 0.1 });
+
+    function createBox(w, h, d, x, y, z, mat = wallMat) {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+        mesh.position.set(x, y, z); mesh.receiveShadow = true; mesh.castShadow = true;
+        scene.add(mesh);
+        return mesh;
+    }
+
+    // Полы с честным вырезом шахты
+    createBox(22, 0.1, 17.8,  0,    0, -2.1, floorMat);
+    createBox(10.0, 0.1, 4.2, -6.0,  0,  8.9, floorMat);
+    createBox(10.0, 0.1, 4.2,  6.0,  0,  8.9, floorMat);
+    createBox(2.0, 0.1, 1.2,   0,    0,  10.4, floorMat);
+
+    createBox(22, 0.1, 22, 0, 3, 0, floorMat);
+
+    createBox(22, 3, 0.2, 0, 1.5, -11);
+    createBox(22, 3, 0.2, 0, 1.5, 11);
+    createBox(0.2, 3, 22, -11, 1.5, 0);
+    createBox(0.2, 3, 22, 11, 1.5, 0);
+
+    const labyrinthWalls = [
+        { w: 4, h: 3, d: 4, x: -4, y: 1.5, z: -3 },
+        { w: 4, h: 3, d: 4, x: 4,  y: 1.5, z: -3 },
+        { w: 4, h: 3, d: 4, x: -4, y: 1.5, z: 3 }
+    ];
+    labyrinthWalls.forEach(w => createBox(w.w, w.h, w.d, w.x, w.y, w.z));
+
+    // 5. Рубильник
+    const leverGroup = new THREE.Group();
+    leverGroup.position.set(10.85, 1.4, -8);
+    scene.add(leverGroup);
+
+    const leverBase = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.4, 0.3), metalMat);
+    leverGroup.add(leverBase);
+
+    const leverHandle = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.3, 0.04), new THREE.MeshStandardMaterial({color: 0xaaaaaa, metalness: 0.8}));
+    leverHandle.position.set(0.06, 0, 0);
+    leverHandle.rotation.z = 1.0;
+    leverGroup.add(leverHandle);
+
+    // 6. Кабина лифта
+    const elevatorGroup = new THREE.Group();
+    elevatorGroup.position.set(0, 0, 6.9);
+    scene.add(elevatorGroup);
+
+    createBox(0.6, 3, 0.6, -1.3, 1.5, 6.6, metalMat);
+    createBox(0.6, 3, 0.6, 1.3, 1.5, 6.6, metalMat);
+    createBox(3.2, 0.4, 0.6, 0, 2.8, 6.6, metalMat);
+
+    function createElevatorWall(w, h, d, x, y, z) {
+        const wallGroup = new THREE.Group();
+        const outer = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), metalMat);
+        const inner = new THREE.Mesh(new THREE.BoxGeometry(w - 0.02, h - 0.02, d - 0.02), woodMat);
+        if (w > d) inner.position.set(0, 0, x === 0 ? -0.02 : 0.02);
+        else inner.position.set(x > 0 ? -0.02 : 0.02, 0, 0);
+        wallGroup.add(outer, inner);
+        wallGroup.position.set(x, y, z);
+        elevatorGroup.add(wallGroup);
+    }
+
+    const elevatorFloor = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.08, 2.4), woodMat);
+    elevatorFloor.position.set(0, 0.04, 1.2);
+    elevatorGroup.add(elevatorFloor);
+
+    createElevatorWall(0.1, 3, 2.4, -1.0, 1.5, 1.2);
+    createElevatorWall(0.1, 3, 2.4,  1.0, 1.5, 1.2);
+    createElevatorWall(2.0, 3, 0.1,  0, 1.5, 2.35);
+    const elevatorCeil = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.08, 2.4), woodMat);
+    elevatorCeil.position.set(0, 2.96, 1.2);
+    elevatorGroup.add(elevatorCeil);
+
+    const elevatorInternalLight = new THREE.PointLight(0xffdca8, 0, 4);
+    elevatorInternalLight.position.set(0, 2.6, 1.2);
+    elevatorGroup.add(elevatorInternalLight);
+
+    const buttonPanel = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.5, 0.2), metalMat);
+    buttonPanel.position.set(0.92, 1.4, 0.6);
+    const redButton = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.1, 0.1), redButtonMat);
+    redButton.position.set(0.89, 1.4, 0.6);
+    elevatorGroup.add(buttonPanel, redButton);
+
+    // Двери (Изначально закрыты)
+    const elevatorGate = createBox(2.0, 3, 0.1, 0, game.gateY, 6.7, darkMetalMat);
+
+    // 7. Монстр-Ноутбук
+    const textureLoader = new THREE.TextureLoader();
+    const faceTex = textureLoader.load('image/face.png');
+
+    const monster = new THREE.Group();
+    monster.position.set(0, 1.3, -7);
+    scene.add(monster);
+
+    const mBase = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.04, 0.6), metalMat);
+    mBase.position.y = -0.2;
+
+    const mLid = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.6, 0.03), metalMat);
+    const mScreen = new THREE.Mesh(new THREE.PlaneGeometry(0.84, 0.54), new THREE.MeshBasicMaterial({ map: faceTex }));
+    mScreen.position.set(0, 0, 0.016);
+
+    const mLidGroup = new THREE.Group();
+    mLidGroup.add(mLid, mScreen);
+    mLidGroup.position.set(0, 0.1, 0);
+    mLidGroup.rotation.x = 0.0;
+    monster.add(mBase, mLidGroup);
+
+    const monsterLight = new THREE.PointLight(0x00ff33, 1.5, 6);
+    monster.add(monsterLight);
+
+    const nodes = [
+        { x: 0, z: 0 }, { x: 0, z: -8 }, { x: 8, z: 0 },
+        { x: -8, z: 0 }, { x: 8, z: -8 }, { x: -8, z: 8 }
+    ];
+    let currentMonsterTargetNode = 1;
+
+    function getClosestNode(pos) {
+        let minDst = Infinity; let closest = 0;
+        for(let i=0; i<nodes.length; i++) {
+            let d = Math.hypot(pos.x - nodes[i].x, pos.z - nodes[i].z);
+            if(d < minDst) { minDst = d; closest = i; }
+        }
+        return closest;
+    }
+
+    function checkCollisionWithWalls(x, z, radius = 0.4) {
+        for (let w of labyrinthWalls) {
+            let halfW = w.w / 2 + radius;
+            let halfD = w.d / 2 + radius;
+            if (x > w.x - halfW && x < w.x + halfW && z > w.z - halfD && z < w.z + halfD) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 8. Логика управления (ЖЕЛЕЗНО ИСПРАВЛЕНА)
+    let moveControls = { forward: false, backward: false, left: false, right: false };
+    let lon = Math.PI / 2, lat = 0;
+
+    startScreen.addEventListener('click', () => {
+        renderer.domElement.requestPointerLock();
+    });
+
+    document.addEventListener('pointerlockchange', () => {
+        if (document.pointerLockElement === renderer.domElement) {
+            startScreen.style.display = 'none';
+
+            // Включаем фоновую музыку при первом клике
+            if (!game.audioInitialized) {
+                playSound('fon');
+                game.audioInitialized = true;
+            }
+
+            if (game.state === 'start') {
+                game.state = 'playing';
+                showSubtitle("Двери лифта заперты обесточенной автоматикой. Найди пусковой рубильник!");
+            }
+        } else if (game.state !== 'win' && game.state !== 'dead') {
+            startScreen.style.display = 'flex';
+        }
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (document.pointerLockElement !== renderer.domElement || game.state === 'dead') return;
+        lon -= e.movementX * 0.0025;
+        lat -= e.movementY * 0.0025;
+        lat = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, lat));
+        cameraPivot.rotation.y = lon;
+        camera.rotation.x = lat;
+    });
+
+    window.addEventListener('keydown', e => {
+        if (game.state !== 'playing') return;
+        if(e.code === 'KeyW') moveControls.forward = true;
+        if(e.code === 'KeyS') moveControls.backward = true;
+        if(e.code === 'KeyA') moveControls.left = true;
+        if(e.code === 'KeyD') moveControls.right = true;
+        if(e.code === 'KeyE') handleInteraction();
+    });
+    window.addEventListener('keyup', e => {
+        if(e.code === 'KeyW') moveControls.forward = false;
+        if(e.code === 'KeyS') moveControls.backward = false;
+        if(e.code === 'KeyA') moveControls.left = false;
+        if(e.code === 'KeyD') moveControls.right = false;
+    });
+
+    function showSubtitle(text) {
+        subtitles.innerText = text; subtitles.style.opacity = 1;
+        setTimeout(() => { if (subtitles.innerText === text) subtitles.style.opacity = 0; }, 5000);
+    }
+
+    // 9. Взаимодействие (Рейкаст)
+    const raycaster = new THREE.Raycaster();
+    const centerMouse = new THREE.Vector2(0, 0);
+
+    function checkInteractions() {
+        raycaster.setFromCamera(centerMouse, camera);
+        game.lookingAt = null;
+        promptEl.style.display = 'none';
+
+        if (cameraPivot.position.distanceTo(new THREE.Vector3(10.85, 1.4, -8)) < 2.5 && !game.leverActivated) {
+            if (raycaster.intersectObject(leverBase).length > 0 || raycaster.intersectObject(leverHandle).length > 0) {
+                game.lookingAt = 'lever'; promptEl.innerText = "Включить резервное питание [ E ]"; promptEl.style.display = 'block';
+                return;
+            }
+        }
+
+        const currentBtnWorldPos = new THREE.Vector3(0.89, 1.4 + game.elevatorY, 7.5);
+        if (cameraPivot.position.distanceTo(currentBtnWorldPos) < 2.2 && game.leverActivated && !game.elevatorMoving && game.gateY >= 4.5) {
+            if (raycaster.intersectObject(redButton).length > 0) {
+                game.lookingAt = 'button'; promptEl.innerText = "Закрыть двери и спуститься [ E ]"; promptEl.style.display = 'block';
+            }
+        }
+    }
+
+    function handleInteraction() {
+        if (game.lookingAt === 'lever') {
+            game.leverActivated = true;
+            leverHandle.rotation.z = -1.0;
+            game.gateOpening = true;
+            elevatorInternalLight.intensity = 0.3;
+
+            playSound('knock');
+            playSound('doorOpen');
+
+            showSubtitle("Питание подано! Двери лифта открываются...");
+        }
+        else if (game.lookingAt === 'button') {
+            game.elevatorMoving = true;
+            game.state = 'elevator_close_gate';
+            moveControls = { forward: false, backward: false, left: false, right: false };
+
+            playSound('knock');
+            playSound('doorClose');
+
+            showSubtitle("Двери закрываются...");
+        }
+    }
+
+    function checkPlayerCollision(pos) {
+        if (pos.x < -10.4 || pos.x > 10.4 || pos.z < -10.4 || pos.z > 10.4) {
+            if (pos.z > 6.6 && pos.x > -0.85 && pos.x < 0.85 && pos.z < 9.0) return false;
+            return true;
+        }
+        if (game.gateY < 4.4 && pos.z > 6.5 && pos.x > -1.0 && pos.x < 1.0) return true;
+        return checkCollisionWithWalls(pos.x, pos.z, 0.4);
+    }
+
+    // 10. Главный игровой цикл
+    function updateGame() {
+        if (Math.random() > 0.98) redLight.intensity = 0.4 + Math.random() * 0.8;
+
+        if (game.gateOpening) {
+            game.gateY += 0.05;
+            elevatorGate.position.y = game.gateY;
+            if (game.gateY >= 4.5) {
+                game.gateY = 4.5;
+                game.gateOpening = false;
+                showSubtitle("Лифт готов к работе. Заходи внутрь.");
+            }
+        }
+
+        if (game.state === 'playing') {
+            const dir = new THREE.Vector3();
+            camera.getWorldDirection(dir); dir.y = 0; dir.normalize();
+            const sideDir = new THREE.Vector3(-dir.z, 0, dir.x);
+            const moveVector = new THREE.Vector3();
+
+            if (moveControls.forward) moveVector.add(dir);
+            if (moveControls.backward) moveVector.sub(dir);
+            if (moveControls.left) moveVector.sub(sideDir);
+            if (moveControls.right) moveVector.add(sideDir);
+
+            moveVector.normalize().multiplyScalar(0.06);
+            const nextPos = cameraPivot.position.clone().add(moveVector);
+
+            if (!checkPlayerCollision(nextPos)) {
+                cameraPivot.position.copy(nextPos);
+            }
+
+            // Движение монстра
+            const pPos = cameraPivot.position;
+            const mPos = monster.position;
+            let targetX = pPos.x; let targetZ = pPos.z;
+            let distanceToPlayer = Math.hypot(pPos.x - mPos.x, pPos.z - mPos.z);
+
+            if (distanceToPlayer > 5.0) {
+                let currTargetNode = nodes[currentMonsterTargetNode];
+                targetX = currTargetNode.x; targetZ = currTargetNode.z;
+                if (Math.hypot(mPos.x - targetX, mPos.z - targetZ) < 0.5) {
+                    currentMonsterTargetNode = (currentMonsterTargetNode + 1) % nodes.length;
+                }
+            }
+
+            const mDir = new THREE.Vector3(targetX - mPos.x, 0, targetZ - mPos.z);
+            if (mDir.length() > 0.1) {
+                mDir.normalize().multiplyScalar(game.monsterSpeed);
+                let nextMonsterPos = mPos.clone().add(mDir);
+
+                if (!checkCollisionWithWalls(nextMonsterPos.x, nextMonsterPos.z, 0.5)) {
+                    monster.position.add(mDir);
+                } else {
+                    let escapeNode = nodes[getClosestNode(mPos)];
+                    let escapeDir = new THREE.Vector3(escapeNode.x - mPos.x, 0, escapeNode.z - mPos.z).normalize().multiplyScalar(game.monsterSpeed);
+                    monster.position.add(escapeDir);
+                }
+            }
+
+            monster.lookAt(pPos.x, monster.position.y, pPos.z);
+
+            if (monster.position.distanceTo(cameraPivot.position) < 1.1) {
+                game.state = 'dead';
+                document.exitPointerLock();
+
+                try { sounds.fon.pause(); } catch(e){}
+                playSound('scream');
+
+                screamerEl.style.display = 'block';
+                setTimeout(() => { window.location.reload(); }, 2500);
+            }
+        }
+
+        if (game.state === 'elevator_close_gate') {
+            game.gateY -= 0.06;
+            elevatorGate.position.y = game.gateY;
+            if (game.gateY <= 1.5) {
+                game.gateY = 1.5;
+                game.state = 'elevator_descend';
+                showSubtitle("Спуск на Уровень 3...");
+            }
+        }
+
+        if (game.state === 'elevator_descend') {
+            game.elevatorY -= 0.02;
+            elevatorGroup.position.y = game.elevatorY;
+            elevatorGate.position.y = 1.5 + game.elevatorY;
+            cameraPivot.position.y = 1.6 + game.elevatorY;
+
+            if (game.elevatorY < -4.0) {
+                game.state = 'win';
+                try { sounds.fon.pause(); } catch(e){}
+                setTimeout(() => { window.location.href = 'three.html'; }, 1000);
+            }
+        }
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        updateGame();
+        if (game.state === 'playing') checkInteractions();
+        renderer.render(scene, camera);
+    }
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    animate();
+</script>
+</body>
