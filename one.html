@@ -3,8 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Комната 863 — Часть 1 (Фикс Фонарика и Выхода)</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <title>Комната 863 — Уровень 1</title>
+    <!-- Локальная копия three.js r128 (MIT, см. vendor/three.LICENSE.txt) — игра работает без интернета -->
+    <script src="js/room863.js"></script>
+    <script src="js/touch.js"></script>
+    <script src="vendor/three.min.js"></script>
+    <script>R863.ensureThree();</script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
         body, html { width: 100%; height: 100%; overflow: hidden; background-color: #000; font-family: sans-serif; }
@@ -58,6 +62,7 @@
         <h2>КОМНАТА 863 — ЭТАП 1</h2>
         <p style="margin-top: 15px; font-size: 16px; color: #ccc;">Кликни по экрану, чтобы начать</p>
         <p style="margin-top: 30px; font-size: 14px; color: #555;">WASD — Движение | Мышь — Обзор | E — Действие</p>
+        <a href="index.html" onclick="event.stopPropagation()" style="margin-top: 34px; font-size: 13px; color: #777; text-decoration: none; border-bottom: 1px solid #333;">← В главное меню</a>
     </div>
 
     <div id="crosshair"></div>
@@ -75,9 +80,11 @@
 
 <script>
     // --- ЗВУКОВОЙ ДВИЖОК ---
-    const soundFon = new Audio('music/fon.mp3'); soundFon.loop = true; soundFon.volume = 0.2;
-    const soundKnock = new Audio('music/knock.mp3');
-    const soundDoor = new Audio('music/door.mp3');
+    const soundFon = R863.applyVolume(new Audio('music/fon.mp3'), 0.2); soundFon.loop = true;
+    const soundKnock = R863.applyVolume(new Audio('music/knock.mp3'), 0.6);
+    // ИСПРАВЛЕНО: раньше здесь был music/door.mp3 — такого файла в репозитории нет,
+    // из-за чего звук двери на первом уровне не играл вообще.
+    const soundDoor = R863.applyVolume(new Audio('music/door_open.mp3'), 0.6);
     let audioStarted = false;
 
     const startScreen = document.getElementById('clickToStart');
@@ -249,6 +256,9 @@
     let lon = 0, lat = 0;
 
     startScreen.addEventListener('click', () => {
+        // На телефонах и планшетах pointer lock недоступен — игру запускает js/touch.js
+        if (R863.isTouchDevice()) return;
+
         renderer.domElement.requestPointerLock();
         // Запуск музыки при первом клике
         if(!audioStarted){ soundFon.play(); audioStarted = true; }
@@ -438,6 +448,36 @@
         camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
     });
+
+    // --- Мост для сенсорного управления (используется js/touch.js) ---
+    window.R863Input = {
+        begin: function () {
+            if (game.state !== 'start') return;
+            startScreen.style.display = 'none';
+            game.state = 'playing';
+            if (!audioStarted) { soundFon.play(); audioStarted = true; }
+            showSubtitle("Дверь заперта. Подойди к ней вплотную и нажми [ E ]");
+        },
+        move: function (forward, backward, left, right) {
+            moveControls.forward = forward;
+            moveControls.backward = backward;
+            moveControls.left = left;
+            moveControls.right = right;
+        },
+        look: function (dx, dy) {
+            if (game.state !== 'playing') return;
+            lon -= dx * 0.0025;
+            lat -= dy * 0.0025;
+            lat = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, lat));
+            cameraPivot.rotation.y = lon;
+            camera.rotation.x = lat;
+        },
+        interact: function () {
+            if (game.state === 'playing') handleInteraction();
+        }
+    };
+
+    R863.setProgress(1);
 
     animate();
 </script>

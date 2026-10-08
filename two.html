@@ -3,8 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Комната 863 — Часть 2 (Исправленное управление)</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <title>Комната 863 — Уровень 2: Подвал</title>
+    <!-- Локальная копия three.js r128 (MIT, см. vendor/three.LICENSE.txt) — игра работает без интернета -->
+    <script src="js/room863.js"></script>
+    <script src="js/touch.js"></script>
+    <script src="vendor/three.min.js"></script>
+    <script>R863.ensureThree();</script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
         body, html { width: 100%; height: 100%; overflow: hidden; background-color: #020202; font-family: sans-serif; }
@@ -39,7 +43,7 @@
 
         #screamer {
             position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
-            background-color: #000; background-image: url('image/face.png');
+            background-color: #000; background-image: url('image/face.jpg');
             background-size: contain; background-position: center; background-repeat: no-repeat;
             z-index: 30; display: none;
         }
@@ -52,6 +56,7 @@
         <h2>УРОВЕНЬ 2 — ПОДВАЛ</h2>
         <p style="margin-top: 15px; font-size: 16px; color: #aaa;">Впереди закрытая шахта лифта.</p>
         <p style="margin-top: 30px; font-size: 14px; color: #666;">Кликни, чтобы начать</p>
+        <a href="index.html" onclick="event.stopPropagation()" style="margin-top: 34px; font-size: 13px; color: #777; text-decoration: none; border-bottom: 1px solid #333;">← В главное меню</a>
     </div>
 
     <div id="crosshair"></div>
@@ -88,13 +93,13 @@
         doorClose: new Audio('music/door_close.mp3')
     };
 
-    // Настройки звуков
+    // Настройки звуков (их «родная» громкость умножается на общую из меню)
     sounds.fon.loop = true;
-    sounds.fon.volume = 0.4;
-    sounds.scream.volume = 0.9;
-    sounds.knock.volume = 0.6;
-    sounds.doorOpen.volume = 0.6;
-    sounds.doorClose.volume = 0.6;
+    R863.applyVolume(sounds.fon, 0.4);
+    R863.applyVolume(sounds.scream, 0.9);
+    R863.applyVolume(sounds.knock, 0.6);
+    R863.applyVolume(sounds.doorOpen, 0.6);
+    R863.applyVolume(sounds.doorClose, 0.6);
 
     function playSound(name) {
         if (sounds[name]) {
@@ -232,7 +237,7 @@
 
     // 7. Монстр-Ноутбук
     const textureLoader = new THREE.TextureLoader();
-    const faceTex = textureLoader.load('image/face.png');
+    const faceTex = textureLoader.load('image/face.jpg');
 
     const monster = new THREE.Group();
     monster.position.set(0, 1.3, -7);
@@ -285,6 +290,9 @@
     let lon = Math.PI / 2, lat = 0;
 
     startScreen.addEventListener('click', () => {
+        // На телефонах и планшетах pointer lock недоступен — игру запускает js/touch.js
+        if (R863.isTouchDevice()) return;
+
         renderer.domElement.requestPointerLock();
     });
 
@@ -503,6 +511,37 @@
         renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
+    // --- Мост для сенсорного управления (используется js/touch.js) ---
+    window.R863Input = {
+        begin: function () {
+            if (game.state !== 'start') return;
+            startScreen.style.display = 'none';
+            game.state = 'playing';
+            if (!game.audioInitialized) { playSound('fon'); game.audioInitialized = true; }
+            showSubtitle("Двери лифта заперты обесточенной автоматикой. Найди пусковой рубильник!");
+        },
+        move: function (forward, backward, left, right) {
+            moveControls.forward = forward;
+            moveControls.backward = backward;
+            moveControls.left = left;
+            moveControls.right = right;
+        },
+        look: function (dx, dy) {
+            if (game.state === 'dead') return;
+            lon -= dx * 0.0025;
+            lat -= dy * 0.0025;
+            lat = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, lat));
+            cameraPivot.rotation.y = lon;
+            camera.rotation.x = lat;
+        },
+        interact: function () {
+            if (game.state === 'playing') handleInteraction();
+        }
+    };
+
+    R863.setProgress(2);
+
     animate();
 </script>
 </body>
+</html>
